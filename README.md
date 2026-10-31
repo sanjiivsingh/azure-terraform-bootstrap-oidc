@@ -3,7 +3,7 @@
 [![Terraform 1.9+](https://img.shields.io/badge/Terraform-1.9+-844FBA?style=for-the-badge&logo=terraform&logoColor=white)](https://www.terraform.io/)
 [![Azure Provider v4+](https://img.shields.io/badge/AzureRM-v4.0+-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white)](https://registry.terraform.io/providers/hashicorp/azurerm/latest)
 [![CI/CD Validation](https://github.com/sanjiivsingh/azure-terraform-bootstrap-oidc/actions/workflows/ci.yml/badge.svg)](https://github.com/sanjiivsingh/azure-terraform-bootstrap-oidc/actions/workflows/ci.yml)
-[![Status: Reference Architecture](https://img.shields.io/badge/Status-Reference_Architecture_(Statically_Validated)-10B981?style=for-the-badge)](https://github.com/sanjiivsingh/azure-terraform-bootstrap-oidc)
+[![Status: Reference Architecture](https://img.shields.io/badge/Status-Reference_Architecture_--_Statically_Validated-10B981?style=for-the-badge)](https://github.com/sanjiivsingh/azure-terraform-bootstrap-oidc)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
 > **Reference Architecture · Statically Validated**  
@@ -25,18 +25,18 @@
 
 ```mermaid
 flowchart LR
-    subgraph GitHub["🐙 GitHub Enterprise / Actions"]
-        RUNNER["GitHub Actions Runner\n(main & PR branches)"]
+    subgraph GitHub["GitHub Enterprise / Actions"]
+        RUNNER["GitHub Actions Runner<br/>(main & PR branches)"]
     end
 
-    subgraph Entra["🛡️ Microsoft Entra ID"]
+    subgraph Entra["Microsoft Entra ID"]
         APP["App Registration & Service Principal"]
-        FED["Federated Identity Credentials\n(Subject Claim: repo:sanjiivsingh/*)"]
+        FED["Federated Identity Credentials<br/>(Subject Claim: repo:sanjiivsingh/*)"]
     end
 
-    subgraph State["💾 Azure State Storage"]
-        ST["Storage Account (Standard LRS)\nTLS 1.2+ & Blob Versioning"]
-        CONTAINER["Private Container: tfstate\n(Native Blob Lease Locking)"]
+    subgraph State["Azure State Storage"]
+        ST["Storage Account (Standard LRS)<br/>TLS 1.2+ & Blob Versioning"]
+        CONTAINER["Private Container: tfstate<br/>(Native Blob Lease Locking)"]
     end
 
     RUNNER -->|OIDC JWT Exchange| FED
@@ -92,7 +92,7 @@ terraform destroy -auto-approve
 ## 👨‍💻 Author & Cloud Consultant
 
 **Sanjeev Singh**  
-*Freelance Azure Cloud Engineer | Terraform & Infrastructure Automation*  
+Senior Azure Cloud Architect & DevSecOps Platform Engineer  
 * 🌐 **Portfolio**: [sanjeevsingh.oneps.in](https://sanjeevsingh.oneps.in)  
 * 💼 **LinkedIn**: [linkedin.com/in/sanjiivsingh](https://linkedin.com/in/sanjiivsingh)  
 * 🐙 **GitHub**: [github.com/sanjiivsingh](https://github.com/sanjiivsingh)
@@ -101,4 +101,3 @@ terraform destroy -auto-approve
 
 ## 📄 License
 Licensed under the [MIT License](LICENSE).
-
