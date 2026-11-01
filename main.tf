@@ -118,7 +118,8 @@ resource "azurerm_federated_identity_credential" "alz_plan" {
   for_each = toset(var.landing_zone_environments)
 
   name                      = "github-alz-${each.key}-plan"
-  user_assigned_identity_id = azurerm_user_assigned_identity.alz_plan[each.key].id
+  resource_group_name         = azurerm_resource_group.bootstrap.name
+  parent_id                   = azurerm_user_assigned_identity.alz_plan[each.key].id
   audience                  = ["api://AzureADTokenExchange"]
   issuer                    = "https://token.actions.githubusercontent.com"
   subject                   = "repo:${var.github_organization}/${var.landing_zone_repository}:environment:${each.key}-plan"
@@ -128,7 +129,8 @@ resource "azurerm_federated_identity_credential" "alz_apply" {
   for_each = toset(var.landing_zone_environments)
 
   name                      = "github-alz-${each.key}-apply"
-  user_assigned_identity_id = azurerm_user_assigned_identity.alz_apply[each.key].id
+  resource_group_name         = azurerm_resource_group.bootstrap.name
+  parent_id                   = azurerm_user_assigned_identity.alz_apply[each.key].id
   audience                  = ["api://AzureADTokenExchange"]
   issuer                    = "https://token.actions.githubusercontent.com"
   subject                   = "repo:${var.github_organization}/${var.landing_zone_repository}:environment:${each.key}-apply"
@@ -207,4 +209,13 @@ resource "azurerm_private_endpoint" "tfstate_blob" {
   }
 
   depends_on = [azurerm_private_dns_zone_virtual_network_link.blob]
+}
+
+resource "azuread_application_federated_identity_credential" "bootstrap_admin" {
+  application_id = azuread_application.github_actions.id
+  display_name   = "bootstrap-admin-environment"
+  description    = "Privileged bootstrap workflow; protect the GitHub environment with required reviewers."
+  audiences      = ["api://AzureADTokenExchange"]
+  issuer         = "https://token.actions.githubusercontent.com"
+  subject        = "repo:${var.github_organization}/${var.github_repository_bootstrap}:environment:${var.bootstrap_admin_environment}"
 }
