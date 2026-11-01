@@ -24,6 +24,11 @@ resource "azurerm_storage_account" "this" {
     }
   }
 
+  sas_policy {
+    expiration_period = "90.00:00:00"
+    expiration_action = "Log"
+  }
+
   network_rules {
     default_action             = var.public_network_access_enabled ? "Allow" : "Deny"
     ip_rules                   = var.network_rules != null ? var.network_rules.ip_rules : []

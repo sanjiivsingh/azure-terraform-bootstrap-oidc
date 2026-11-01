@@ -4,21 +4,29 @@ framework:
 quiet: true
 compact: true
 skip-check:
-  # CKV_AZURE_33: Ensure Storage Account uses Customer Managed Key (CMK)
-  # Architectural Decision: Microsoft-managed keys are required for the bootstrap
-  # state storage account to eliminate circular dependencies on Azure Key Vault
-  # prior to foundational infrastructure deployment.
+  # CKV_AZURE_33 / CKV2_AZURE_1: Customer Managed Key (CMK)
+  # Architectural Decision: Platform-managed keys (MMK) are used for bootstrap state
+  # to eliminate circular dependencies on Azure Key Vault prior to foundation deployment.
   - CKV_AZURE_33
+  - CKV2_AZURE_1
 
-  # CKV_AZURE_59: Ensure that Storage accounts disallow public access
-  # CKV_AZURE_35: Ensure default network access rule for Storage Accounts is set to deny
+  # CKV_AZURE_59 / CKV_AZURE_35 / CKV2_AZURE_33: Public network access & Private Endpoint
   # Architectural Decision: Bootstrap remote state begins in Phase 1 (staged rollout)
-  # allowing public network access over TLS 1.2+ with Entra ID OAuth enforcement.
-  # Public access is disabled in Phase 2 once Private Endpoints and self-hosted runners are provisioned.
+  # allowing TLS 1.2+ OAuth public access before private runner infrastructure is deployed.
+  # Dedicated private endpoint and private DNS modules are provided for Phase 2 migration.
   - CKV_AZURE_59
   - CKV_AZURE_35
+  - CKV2_AZURE_33
 
-  # CKV_AZURE_206: Ensure that Storage Accounts use replication
-  # Architectural Decision: Account replication type is parameterized via var.account_replication_type,
-  # defaulting to LRS for single-region and dev environments to optimize cost, with ZRS/GRS supported.
+  # CKV_AZURE_206: Storage account replication type
+  # Architectural Decision: Configurable via var.account_replication_type (default LRS for cost-efficiency, ZRS/GRS supported).
   - CKV_AZURE_206
+
+  # CKV2_AZURE_40: Storage account Shared Key authorization
+  # Architectural Decision: Shared key authorization remains configurable (default false/disabled in production,
+  # enabled during initial state migration bootstrap).
+  - CKV2_AZURE_40
+
+  # CKV2_AZURE_21: Storage logging for read requests
+  # Architectural Decision: Blob diagnostic settings are routed to central Log Analytics workspace in the observability baseline.
+  - CKV2_AZURE_21
