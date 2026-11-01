@@ -56,6 +56,9 @@ jobs:
           quiet: true
           soft_fail: false
 
+      - name: Reconcile Workspace Permissions
+        run: sudo chown -R $USER:$USER .
+
       - name: Detect Secrets (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
         env:
