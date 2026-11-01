@@ -1,0 +1,86 @@
+name: "Terraform Plan"
+
+on:
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment for plan (bootstrap, dev, prod)"
+        required: true
+        default: "bootstrap"
+        type: choice
+        options:
+          - bootstrap
+          - dev
+          - prod
+      runner_type:
+        description: "Runner architecture type (github-hosted or azure-private)"
+        required: false
+        default: "github-hosted"
+        type: choice
+        options:
+          - github-hosted
+          - azure-private
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: terraform-plan-${{ github.event.inputs.environment || 'bootstrap' }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: "Generate Terraform Plan"
+    runs-on: ${{ github.event.inputs.runner_type == 'azure-private' && fromJSON('["self-hosted", "linux", "azure-private"]') || 'ubuntu-latest' }}
+    environment: dev-plan
+
+    # Security rule: Do not run privileged OIDC jobs on untrusted pull requests from fork repositories
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.5"
+
+      - name: Authenticate to Azure via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_PLAN || vars.AZURE_CLIENT_ID_PLAN }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Initialize
+        run: |
+          terraform init
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -no-color -out=tfplan.binary
+          terraform show -no-color tfplan.binary > tfplan.txt
+        env:
+          ARM_USE_OIDC: "true"
+
+      - name: Archive Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ github.event.inputs.environment || 'bootstrap' }}-${{ github.sha }}
+          path: |
+            tfplan.binary
+            tfplan.txt
+          retention-days: 7
+
+      - name: Post Plan Summary to Job Summary
+        run: |
+          echo "### 📋 Terraform Plan Summary (${{ github.event.inputs.environment || 'bootstrap' }})" >> $GITHUB_STEP_SUMMARY
+          echo '```terraform' >> $GITHUB_STEP_SUMMARY
+          tail -n 100 tfplan.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

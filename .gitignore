@@ -1,6 +1,39 @@
+# Local .terraform directories
+**/.terraform/*
 .terraform/
+
+# .tfstate files
 *.tfstate
 *.tfstate.*
+*.tfstate.backup
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Exclude all .tfvars files, which are likely to contain sensitive data, but keep example files
 *.tfvars
-!*.example.tfvars
+*.tfvars.json
+!*.tfvars.example
+!example.tfvars
+
+# Ignore override files as they are usually used only for local development
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Include lockfile in git per Terraform best practices
+!.terraform.lock.hcl
+
+# Infracost and Plan artifacts
+*.tfplan
+*.tfplan.binary
+*.tfplan.json
+
+# TFLint local cache
+.tflint.d/
+
+# OS specific files
 .DS_Store
+Thumbs.db

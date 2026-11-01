@@ -1,0 +1,71 @@
+name: "Terraform Apply"
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment for apply (bootstrap, dev-apply, prod-apply)"
+        required: true
+        default: "bootstrap"
+        type: choice
+        options:
+          - bootstrap
+          - dev-apply
+          - prod-apply
+      runner_type:
+        description: "Runner architecture type (github-hosted or azure-private)"
+        required: false
+        default: "github-hosted"
+        type: choice
+        options:
+          - github-hosted
+          - azure-private
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: terraform-apply-${{ github.event.inputs.environment || 'bootstrap' }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: "Apply Terraform Deployment"
+    runs-on: ${{ github.event.inputs.runner_type == 'azure-private' && fromJSON('["self-hosted", "linux", "azure-private"]') || 'ubuntu-latest' }}
+    environment: ${{ github.event.inputs.environment || 'prod-apply' }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.5"
+
+      - name: Authenticate to Azure via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_APPLY || vars.AZURE_CLIENT_ID_APPLY }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID || vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform Initialize
+        run: |
+          terraform init
+
+      - name: Terraform Apply
+        run: |
+          terraform apply -auto-approve
+        env:
+          ARM_USE_OIDC: "true"
+
+      - name: Publish Deployment Summary
+        if: always()
+        run: |
+          echo "### 🚀 Terraform Apply Completed" >> $GITHUB_STEP_SUMMARY
+          echo "Target Environment: \`${{ github.event.inputs.environment || 'prod-apply' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "Timestamp: \`$(date -u)\`" >> $GITHUB_STEP_SUMMARY

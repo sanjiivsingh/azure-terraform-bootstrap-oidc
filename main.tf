@@ -1,10 +1,20 @@
 data "azurerm_client_config" "current" {}
 
-resource "azurerm_resource_group" "bootstrap" {
+# ------------------------------------------------------------------------------
+# 1. Resource Group Module
+# ------------------------------------------------------------------------------
+
+module "resource_group" {
+  source = "./modules/resource-group"
+
   name     = var.resource_group_name
   location = var.location
   tags     = var.tags
 }
+
+# ------------------------------------------------------------------------------
+# 2. Remote State Storage Account Module
+# ------------------------------------------------------------------------------
 
 resource "random_string" "suffix" {
   length  = 6
@@ -12,69 +22,113 @@ resource "random_string" "suffix" {
   upper   = false
 }
 
-resource "azurerm_storage_account" "tfstate" {
-  name                     = "sttfstate${random_string.suffix.result}"
-  resource_group_name      = azurerm_resource_group.bootstrap.name
-  location                 = azurerm_resource_group.bootstrap.location
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
-  min_tls_version          = "TLS1_2"
+locals {
+  storage_account_name = var.storage_account_name != null ? var.storage_account_name : "sttfstate${random_string.suffix.result}"
+}
 
-  blob_properties {
-    versioning_enabled = true
-    delete_retention_policy {
-      days = 30
-    }
-    container_delete_retention_policy {
-      days = 30
+module "state_storage" {
+  source = "./modules/state-storage"
+
+  storage_account_name          = local.storage_account_name
+  resource_group_name           = module.resource_group.name
+  location                      = module.resource_group.location
+  account_replication_type      = var.account_replication_type
+  shared_access_key_enabled     = var.shared_access_key_enabled
+  public_network_access_enabled = var.public_network_access_enabled
+  tags                          = var.tags
+}
+
+# ------------------------------------------------------------------------------
+# 3. State Container Module
+# ------------------------------------------------------------------------------
+
+module "state_container" {
+  source = "./modules/state-container"
+
+  container_name     = "tfstate"
+  storage_account_id = module.state_storage.id
+}
+
+# ------------------------------------------------------------------------------
+# 4. Microsoft Entra OIDC Workload Identities Module
+# ------------------------------------------------------------------------------
+
+module "github_oidc" {
+  source = "./modules/github-oidc"
+
+  github_organization              = var.github_organization
+  github_repositories              = var.github_repositories
+  bootstrap_repository_name        = var.bootstrap_repository_name
+  create_environment_identities    = var.create_environment_identities
+  enable_legacy_branch_credentials = var.enable_legacy_branch_credentials
+}
+
+# ------------------------------------------------------------------------------
+# 5. Optional User-Assigned Managed Identity Module
+# ------------------------------------------------------------------------------
+
+module "managed_identity" {
+  count  = var.enable_managed_identity ? 1 : 0
+  source = "./modules/managed-identities"
+
+  name                = "uami-terraform-bootstrap"
+  resource_group_name = module.resource_group.name
+  location            = module.resource_group.location
+  tags                = var.tags
+
+  federated_credentials = {
+    "bootstrap-runner" = {
+      subject  = "repo:${var.github_organization}/${var.bootstrap_repository_name}:ref:refs/heads/main"
+      audience = ["api://AzureADTokenExchange"]
+      issuer   = "https://token.actions.githubusercontent.com"
     }
   }
-
-  tags = var.tags
 }
 
-resource "azurerm_storage_container" "tfstate" {
-  name                  = "tfstate"
-  storage_account_id    = azurerm_storage_account.tfstate.id
-  container_access_type = "private"
+# ------------------------------------------------------------------------------
+# 6. Least-Privilege RBAC Module
+# Scoped to state container resource manager ID for least privilege.
+# ------------------------------------------------------------------------------
+
+locals {
+  all_state_principals = concat(
+    [module.github_oidc.bootstrap_admin_principal_id],
+    values(module.github_oidc.environment_principal_ids),
+    var.enable_managed_identity ? [module.managed_identity[0].principal_id] : []
+  )
 }
 
-# Microsoft Entra Application for GitHub Actions OIDC
-resource "azuread_application" "github_actions" {
-  display_name = "app-github-actions-${var.github_organization}"
+module "rbac" {
+  source = "./modules/rbac"
+
+  state_container_scope        = module.state_container.resource_manager_id
+  state_blob_data_contributors = local.all_state_principals
+  workload_role_assignments    = {}
 }
 
-resource "azuread_service_principal" "github_actions" {
-  client_id = azuread_application.github_actions.client_id
+# ------------------------------------------------------------------------------
+# 7. Optional Private Endpoint and Private DNS Modules
+# ------------------------------------------------------------------------------
+
+module "private_dns" {
+  count  = var.enable_private_networking && var.virtual_network_id != null ? 1 : 0
+  source = "./modules/private-dns"
+
+  resource_group_name = module.resource_group.name
+  virtual_network_ids = [var.virtual_network_id]
+  tags                = var.tags
 }
 
-# Federated Identity Credentials per Repository
-resource "azuread_application_federated_identity_credential" "main_branch" {
-  for_each = toset(var.github_repositories)
+module "private_endpoint" {
+  count  = var.enable_private_networking && var.subnet_id != null ? 1 : 0
+  source = "./modules/private-endpoint"
 
-  application_id = azuread_application.github_actions.id
-  display_name   = "${each.key}-main"
-  description    = "OIDC federation for ${each.key} main branch deployments"
-  audiences      = ["api://AzureADTokenExchange"]
-  issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:${var.github_organization}/${each.key}:ref:refs/heads/main"
+  name                 = "pe-${module.state_storage.name}-blob"
+  resource_group_name  = module.resource_group.name
+  location             = module.resource_group.location
+  subnet_id            = var.subnet_id
+  storage_account_id   = module.state_storage.id
+  subresource_names    = ["blob"]
+  private_dns_zone_ids = var.enable_private_networking && var.virtual_network_id != null ? [module.private_dns[0].id] : []
+  tags                 = var.tags
 }
-
-resource "azuread_application_federated_identity_credential" "pr_branches" {
-  for_each = toset(var.github_repositories)
-
-  application_id = azuread_application.github_actions.id
-  display_name   = "${each.key}-pr"
-  description    = "OIDC federation for ${each.key} pull requests"
-  audiences      = ["api://AzureADTokenExchange"]
-  issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:${var.github_organization}/${each.key}:pull_request"
-}
-
-# Least-privilege Storage Blob Data Contributor on State Container
-resource "azurerm_role_assignment" "tfstate_blob_contributor" {
-  scope                = azurerm_storage_account.tfstate.id
-  role_definition_name = "Storage Blob Data Contributor"
-  principal_id         = azuread_service_principal.github_actions.object_id
-}
-
