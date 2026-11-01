@@ -1,0 +1,38 @@
+# ------------------------------------------------------------------------------
+# Example Variables for Azure Terraform Bootstrap & OIDC Platform
+# ------------------------------------------------------------------------------
+
+resource_group_name      = "rg-terraform-bootstrap"
+location                 = "centralindia"
+environment              = "bootstrap"
+account_replication_type = "LRS"
+
+# Staged Security Migration Flags
+# 1. Initial creation: shared_access_key_enabled = true, public_network_access_enabled = true
+# 2. Hardening phase:  shared_access_key_enabled = false, public_network_access_enabled = false (requires self-hosted runner)
+shared_access_key_enabled     = true
+public_network_access_enabled = true
+
+github_organization       = "sanjiivsingh"
+bootstrap_repository_name = "azure-terraform-bootstrap-oidc"
+
+# Downstream landing zone repositories consuming remote state & OIDC
+github_repositories = [
+  "azure-enterprise-landing-zone-terraform",
+  "azure-enterprise-ai-landing-zone-terraform",
+  "azure-aks-devsecops-pipeline",
+  "azure-landing-zone-governance"
+]
+
+create_environment_identities    = true
+enable_legacy_branch_credentials = true
+enable_managed_identity          = false
+enable_private_networking        = false
+
+tags = {
+  ManagedBy   = "Terraform"
+  Environment = "Bootstrap"
+  Project     = "Azure-Platform-OIDC"
+  Owner       = "Sanjeev Singh"
+}
+

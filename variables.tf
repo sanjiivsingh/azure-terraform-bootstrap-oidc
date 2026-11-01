@@ -10,6 +10,18 @@ variable "location" {
   description = "Azure region for bootstrap resources."
 }
 
+variable "storage_account_name" {
+  type        = string
+  default     = null
+  description = "Optional custom storage account name. If null, a deterministic prefix with a random suffix is used."
+}
+
+variable "account_replication_type" {
+  type        = string
+  default     = "LRS"
+  description = "Replication type for the state storage account (LRS, ZRS, GRS, GZRS)."
+}
+
 variable "github_organization" {
   type        = string
   default     = "sanjiivsingh"
@@ -17,8 +29,8 @@ variable "github_organization" {
 }
 
 variable "github_repositories" {
-  type        = list(string)
-  default     = [
+  type = list(string)
+  default = [
     "azure-enterprise-landing-zone-terraform",
     "azure-enterprise-ai-landing-zone-terraform",
     "azure-aks-devsecops-pipeline",
@@ -49,6 +61,18 @@ variable "landing_zone_scope_ids" {
   type        = map(string)
   default     = {}
   description = "Optional Azure scope per environment. Defaults to the current subscription. Example: { dev = \"/subscriptions/<dev-sub-id>\", prod = \"/subscriptions/<prod-sub-id>\" }."
+}
+
+variable "create_environment_identities" {
+  type        = bool
+  default     = true
+  description = "Whether to provision granular dev-plan, dev-apply, prod-plan, and prod-apply Entra applications."
+}
+
+variable "enable_legacy_branch_credentials" {
+  type        = bool
+  default     = true
+  description = "Whether to retain backward-compatible federated credentials for refs/heads/main and pull_request directly on the primary identity."
 }
 
 variable "shared_access_key_enabled" {
@@ -97,8 +121,8 @@ variable "private_dns_resource_group_name" {
 }
 
 variable "tags" {
-  type        = map(string)
-  default     = {
+  type = map(string)
+  default = {
     ManagedBy   = "Terraform"
     Environment = "Bootstrap"
     Project     = "Azure-Platform-OIDC"

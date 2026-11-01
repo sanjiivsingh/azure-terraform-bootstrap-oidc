@@ -1,29 +1,62 @@
-name: Terraform CI
+name: "Terraform CI"
 
 on:
   push:
-    branches: [main]
+    branches: [ "main" ]
   pull_request:
-    branches: [main]
+    branches: [ "main" ]
 
 permissions:
   contents: read
 
 jobs:
-  validate:
+  static-checks:
+    name: "Static Code Analysis & Security Gates"
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
-      - name: Terraform format
+
+      - name: Terraform Format Check
         run: terraform fmt -check -recursive
-      - name: Terraform init and validate
+
+      - name: Initialize & Validate Root Module
         run: |
           terraform init -backend=false
           terraform validate
-      - name: Gitleaks
+
+      - name: Initialize & Validate Bootstrap Environment
+        run: |
+          cd environments/bootstrap
+          terraform init -backend=false
+          terraform validate
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: "v0.52.0"
+
+      - name: Run TFLint
+        run: |
+          tflint --init
+          tflint --recursive
+
+      - name: Run Checkov Static Analysis
+        uses: bridgecrewio/checkov-action@master
+        with:
+          config_file: checkov.yaml
+          quiet: true
+          soft_fail: false
+
+      - name: Detect Secrets (Gitleaks)
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

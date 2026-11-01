@@ -1,106 +1,294 @@
-# Azure Terraform Bootstrap: Remote State, OIDC and Private Connectivity
+# 🚀 Azure Terraform Remote State & GitHub OIDC Bootstrap Platform
 
-This repository bootstraps the shared Azure Terraform state platform used by
-`sanjiivsingh/azure-enterprise-landing-zone-terraform`.
+[![Terraform 1.9+](https://img.shields.io/badge/Terraform-1.9+-844FBA?style=for-the-badge&logo=terraform&logoColor=white)](https://www.terraform.io/)
+[![Azure Provider v4+](https://img.shields.io/badge/AzureRM-v4.0+-0078D4?style=for-the-badge&logo=microsoftazure&logoColor=white)](https://registry.terraform.io/providers/hashicorp/azurerm/latest)
+[![CI/CD Validation](https://github.com/sanjiivsingh/azure-terraform-bootstrap-oidc/actions/workflows/ci.yml/badge.svg)](https://github.com/sanjiivsingh/azure-terraform-bootstrap-oidc/actions/workflows/ci.yml)
+[![Status: Reference Architecture](https://img.shields.io/badge/Status-Reference_Architecture_--_Statically_Validated-10B981?style=for-the-badge)](https://github.com/sanjiivsingh/azure-terraform-bootstrap-oidc)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
-## Capabilities
-- Azure Storage Account and private Blob container for Terraform state.
-- Blob versioning, soft delete, HTTPS-only and TLS 1.2.
-- GitHub OIDC without long-lived client secrets.
-- Separate user-assigned managed identities for ALZ dev/prod plan and apply.
-- Container-scoped Blob Data Contributor for state access and lease locking.
-- Optional Blob Private Endpoint and private DNS integration.
-- Legacy Entra application retained temporarily for migration and protected bootstrap administration.
+> **Reference Architecture · Statically Validated**  
+> Enterprise-grade, reusable foundation for Microsoft Azure Terraform deployments. Provisions secure remote state backends (Blob Storage with native lease locking, blob versioning, and soft delete) paired with passwordless Microsoft Entra Workload Identity Federation (GitHub Actions OIDC), environment-segregated RBAC, and optional private link perimeter hardening.
 
-## Migration-safe defaults
-The Storage Account retains public network access and shared-key access by
-default. Do not disable either until all consumers use Entra data-plane auth and
-the Azure self-hosted runner has proven private endpoint connectivity.
+---
 
-## Bootstrap prerequisites
-The initial deployment requires an operator with:
-- Contributor (or equivalent) to create the resource group, storage and UAMIs.
-- User Access Administrator or Role Based Access Control Administrator to
-  create RBAC role assignments.
-- Application Administrator / Cloud Application Administrator to manage the
-  Entra application and federated credentials.
+## 📌 Executive Summary
 
-The protected GitHub bootstrap workflow uses the legacy application. Grant it
-the required resource and RBAC administration permissions before running it.
-Avoid Owner unless your governance model specifically requires it.
+Managing Terraform state and pipeline credentials across enterprise teams requires solving three critical challenges:
+1. **State Exposure & Corruption:** Committing `.tfstate` locally leaks secrets, while concurrent team runs without distributed locking corrupt state.
+2. **Credential Rotation Overhead:** Storing static Service Principal client secrets (`ARM_CLIENT_SECRET`) in GitHub introduces secret leakage and expiration outages.
+3. **Monolithic Blast Radii:** Sharing a single high-privilege identity across all repositories and environments allows speculative PR runs to mutate production infrastructure.
 
-## Initial deployment and state migration
-The bootstrap cannot initially use a Storage Account it has not created.
-1. Back up the current local Terraform state.
-2. Run `terraform init -backend=false`, `terraform plan`, and apply using an
-   appropriately privileged operator identity.
-3. Capture outputs for resource group, Storage Account, container, tenant,
-   subscription and ALZ UAMI client IDs.
-4. Add the empty `backend "azurerm" {}` block (provided as `backend.tf`).
-5. Run `terraform init -migrate-state` with the backend values from outputs.
-6. Verify the state blob, `terraform state list`, and a no-change plan.
-7. Configure the protected GitHub Environment `bootstrap-admin`; subsequent
-   changes can use the manual bootstrap workflow.
+**The Solution:** This platform establishes an automated, passwordless, modular bootstrap environment providing:
+- **Centralized Remote State:** Dedicated Azure Storage Account with TLS 1.2+, blob versioning, 30-day soft delete, and native blob lease locking.
+- **Zero-Secret OIDC Federation:** Short-lived tokens minted on-demand using Microsoft Entra Workload Identity Federation.
+- **Role-Segregated Identities:** Granular Entra applications and User-Assigned Managed Identities (UAMI) for `bootstrap-admin`, `dev-plan`, `dev-apply`, `prod-plan`, and `prod-apply`.
+- **Staged Network Isolation:** Clear roadmap to transition from initial public rollout over TLS 1.2+ to Private Endpoints and private DNS for self-hosted Azure runners.
 
-Do not delete the local backup until remote state has been verified.
+---
 
-## ALZ GitHub Environments and OIDC subjects
-Create these environments in `azure-enterprise-landing-zone-terraform`:
-- `dev-plan`: `repo:sanjiivsingh/azure-enterprise-landing-zone-terraform:environment:dev-plan`
-- `dev-apply`: `repo:sanjiivsingh/azure-enterprise-landing-zone-terraform:environment:dev-apply`
-- `prod-plan`: `repo:sanjiivsingh/azure-enterprise-landing-zone-terraform:environment:prod-plan`
-- `prod-apply`: `repo:sanjiivsingh/azure-enterprise-landing-zone-terraform:environment:prod-apply`
+## 🏛️ Target Architecture
 
-The bootstrap creates distinct plan/apply UAMIs for dev and prod. Both identities
-receive Blob Data Contributor on the state container for backend state and
-lease operations. Plan gets Reader on the target subscription; apply gets
-Contributor because the current ALZ root creates resource groups and network
-resources. Narrow apply permissions after resource groups are pre-created.
+```mermaid
+flowchart TD
+    subgraph GitHub["🐙 GitHub Actions Workflows"]
+        PR["Pull Request Check<br/>(dev-plan identity)"]
+        DEV["Dev Deploy Pipeline<br/>(dev-apply identity)"]
+        PROD["Prod Release Pipeline<br/>(prod-apply identity + Gate)"]
+        BOOT["Bootstrap Management<br/>(bootstrap-admin identity)"]
+    end
 
-Set environment variables in each ALZ GitHub Environment:
-- `AZURE_CLIENT_ID`: matching UAMI client ID from bootstrap outputs.
-- `AZURE_TENANT_ID`: Entra tenant ID.
-- `AZURE_SUBSCRIPTION_ID`: target subscription ID.
-Set repository variables `TFSTATE_RESOURCE_GROUP` and
-`TFSTATE_STORAGE_ACCOUNT` for backend initialization.
+    subgraph Entra["🛡️ Microsoft Entra ID (OIDC Federation)"]
+        ID_PLAN["App / UAMI: dev-plan<br/>(Azure Reader)"]
+        ID_DEV["App / UAMI: dev-apply<br/>(Dev RG Contributor)"]
+        ID_PROD["App / UAMI: prod-apply<br/>(Prod RG Contributor)"]
+        ID_ADMIN["App: bootstrap-admin<br/>(Bootstrap RG Contributor)"]
+    end
 
-For the bootstrap repository, create protected environment `bootstrap-admin`
-and set `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`,
-`TFSTATE_RESOURCE_GROUP`, and `TFSTATE_STORAGE_ACCOUNT`. Its federated
-subject is
-`repo:sanjiivsingh/azure-terraform-bootstrap-oidc:environment:bootstrap-admin`.
+    subgraph AzureState["💾 Azure Remote State Platform"]
+        RG["Resource Group: rg-terraform-bootstrap"]
+        ST["Storage Account: sttfstate[suffix]<br/>TLS 1.2+, Versioning, Soft Delete"]
+        CONTAINER["Private Blob Container: tfstate"]
+        
+        subgraph StateBlobs["Isolated State Keys"]
+            K_BOOT["bootstrap/terraform.tfstate"]
+            K_DEV["landing-zone/dev.terraform.tfstate"]
+            K_PROD["landing-zone/prod.terraform.tfstate"]
+        end
+    end
 
-## Private runner and Blob endpoint
-A private-only Storage Account requires the runner to have VNet routing and
-private DNS resolution for `<account>.blob.core.windows.net`. GitHub-hosted
-runners cannot directly reach the private endpoint. Use an Azure self-hosted
-runner inside the VNet linked to `privatelink.blob.core.windows.net`.
+    subgraph PrivateLink["🔒 Optional Private Network Perimeter"]
+        PE["Blob Private Endpoint (NIC)"]
+        DNS["Private DNS: privatelink.blob.core.windows.net"]
+        RUNNER["Self-Hosted Runner Subnet"]
+    end
 
-The optional private endpoint requires `enable_private_endpoint=true`,
-`management_vnet_id`, `private_endpoint_subnet_id`, and
-`management_vnet_name`. Keep public access enabled until the Azure runner
-resolves the Blob FQDN to the private endpoint IP and `terraform init` works.
+    PR -->|OIDC Exchange| ID_PLAN
+    DEV -->|OIDC Exchange| ID_DEV
+    PROD -->|OIDC Exchange| ID_PROD
+    BOOT -->|OIDC Exchange| ID_ADMIN
 
-The ALZ repo currently creates the Hub VNet, but the first ALZ deployment must
-happen before a runner can be placed in that VNet. Use an authorized operator
-and temporary public Storage access for this first deployment, then install
-the Azure runner and complete private networking before locking down Storage.
+    ID_PLAN -->|Read State & Lease Lock| CONTAINER
+    ID_DEV -->|Read/Write State & Lease Lock| CONTAINER
+    ID_PROD -->|Read/Write State & Lease Lock| CONTAINER
+    ID_ADMIN -->|Full Control| RG
 
-## Security and operations
-- Protect `prod-apply` and `bootstrap-admin` with required reviewers.
-- Restrict the self-hosted runner group to trusted repositories.
-- Never run untrusted fork PR code on the private runner.
-- Do not store runner registration tokens in Terraform variables or state.
-- State files can contain secrets; restrict container access and enable recovery.
-- Keep the legacy app and FICs until all downstream consumers have migrated;
-  remove them in a separate reviewed change.
+    ST --> CONTAINER
+    CONTAINER --> StateBlobs
 
-## Validation
-```bash
-terraform fmt -recursive
-terraform init -backend=false
-terraform validate
-terraform plan
+    RUNNER -.->|Private DNS Query| DNS
+    RUNNER -.->|Private IP Traffic| PE
+    PE -.->|Private Link| ST
 ```
 
-See `docs/INTEGRATION.md` for the end-to-end consumer setup.
+---
+
+## 🔐 OIDC Authentication Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant GHA as GitHub Actions Runner
+    participant GH_OIDC as GitHub OIDC Token Service
+    participant ENTRA as Microsoft Entra ID
+    participant AZURE as Azure Resource Manager
+
+    GHA->>GH_OIDC: Request OpenID Connect JWT token
+    GH_OIDC-->>GHA: Return signed JWT with claims (repo, environment, ref)
+    GHA->>ENTRA: Exchange JWT for Azure Access Token (via azure/login)
+    ENTRA->>ENTRA: Validate JWT signature & match Federated Identity Credential
+    ENTRA-->>GHA: Return short-lived Azure OAuth token (valid 60 min)
+    GHA->>AZURE: Execute Terraform operations with Bearer token
+```
+
+---
+
+## 📁 Repository Structure
+
+```text
+azure-terraform-bootstrap-oidc/
+├── .github/
+│   ├── CODEOWNERS
+│   ├── dependabot.yml
+│   └── workflows/
+│       ├── ci.yml                     # Static code analysis, tflint, checkov, gitleaks
+│       ├── terraform-plan.yml         # OIDC-authenticated plan generation & artifact publishing
+│       ├── terraform-apply.yml        # Protected apply with GitHub Environment gates & concurrency
+│       ├── terraform-destroy.yml      # Manual dispatch with strict confirmation & state safeguards
+│       └── bootstrap-deploy.yml       # Dedicated bootstrap dispatch workflow with OIDC
+│
+├── environments/
+│   └── bootstrap/                     # Dedicated environment composition
+│       ├── main.tf                    # Environment module composition
+│       ├── variables.tf               # Environment variables with type constraints & validations
+│       ├── outputs.tf                 # Essential resource IDs, client IDs, and backend snippet
+│       ├── providers.tf               # Provider constraints (azurerm, azuread, random)
+│       ├── backend.tf                 # Remote backend config & state migration instructions
+│       └── terraform.tfvars.example   # Sample configuration variables
+│
+├── modules/
+│   ├── resource-group/                # Baseline Azure Resource Group module
+│   ├── state-storage/                 # Secure Storage Account (TLS 1.2+, Versioning, Soft Delete)
+│   ├── state-container/               # Private Blob container with resource manager ID export
+│   ├── github-oidc/                   # Microsoft Entra Applications & Federated Credentials
+│   ├── managed-identities/            # User-Assigned Managed Identity option for Azure runners
+│   ├── rbac/                          # Container-scoped Storage Blob Contributor & workload roles
+│   ├── private-endpoint/              # Blob Private Endpoint module
+│   └── private-dns/                   # Private DNS Zone & Virtual Network Link module
+│
+├── docs/
+│   ├── ARCHITECTURE.md                # Enterprise architecture specification & dependency flow
+│   ├── SECURITY.md                    # Zero-secret controls & staged network hardening
+│   ├── OIDC-SETUP.md                  # Step-by-step Entra federation & subject claim guide
+│   ├── BACKEND-SETUP.md               # Backend vs provider decoupling & lease lock details
+│   ├── DEPLOYMENT.md                  # Deployment runbook & chicken-and-egg state migration
+│   ├── DISASTER-RECOVERY.md           # Soft-delete recovery, blob versioning & rollback guides
+│   ├── RUNNER-ARCHITECTURE.md         # Azure self-hosted runner placement & network topology
+│   ├── INTEGRATION.md                 # Integration guide with Azure Enterprise Landing Zone
+│   ├── EVIDENCE.md                    # Verification evidence, static test logs & cost matrix
+│   └── ADR/                           # Architecture Decision Records (ADR-001 through ADR-005)
+│
+├── .gitignore                         # Comprehensive Terraform & secret exclusions
+├── .pre-commit-config.yaml            # Pre-commit hooks for secret detection
+├── .tflint.hcl                        # TFLint configuration with recommended rules
+├── checkov.yaml                       # Checkov policy configuration & architectural rationales
+├── backend.tf                         # Root remote backend declaration
+├── main.tf                            # Root module (invokes reusable child modules)
+├── variables.tf                       # Root variables
+├── outputs.tf                         # Root outputs (includes backward-compatible outputs)
+├── versions.tf                        # Root provider constraints
+└── README.md
+```
+
+---
+
+## 📋 Component & Module Inventory
+
+| Module | Directory | Purpose | Key Inputs | Key Outputs |
+| :--- | :--- | :--- | :--- | :--- |
+| **Resource Group** | `modules/resource-group` | Lifecycle boundary for state and identity | `name`, `location`, `tags` | `id`, `name`, `location` |
+| **State Storage** | `modules/state-storage` | Hardened Azure Blob storage for `.tfstate` | `storage_account_name`, `account_replication_type`, `shared_access_key_enabled`, `public_network_access_enabled` | `id`, `name`, `primary_blob_endpoint` |
+| **State Container** | `modules/state-container` | Private container hosting state blobs | `container_name`, `storage_account_id` | `id`, `resource_manager_id`, `name` |
+| **GitHub OIDC** | `modules/github-oidc` | Workload Identity Federation apps & credentials | `github_organization`, `github_repositories`, `create_environment_identities` | `bootstrap_admin_client_id`, `environment_client_ids`, `environment_principal_ids` |
+| **Managed Identity** | `modules/managed-identities` | Azure UAMI for native workloads & runners | `name`, `resource_group_name`, `federated_credentials` | `id`, `principal_id`, `client_id` |
+| **RBAC** | `modules/rbac` | Least-privilege container & workload access | `state_container_scope`, `state_blob_data_contributors`, `workload_role_assignments` | `state_role_assignment_ids`, `workload_role_assignment_ids` |
+| **Private Endpoint** | `modules/private-endpoint` | Private IP link to storage account | `name`, `subnet_id`, `storage_account_id`, `private_dns_zone_ids` | `id`, `private_ip_address` |
+| **Private DNS** | `modules/private-dns` | Authoritative DNS for `privatelink.blob.core.windows.net` | `zone_name`, `resource_group_name`, `virtual_network_ids` | `id`, `name` |
+
+---
+
+## 🛡️ Azure RBAC & State Lease Mechanics
+
+### Why Plan Identities Require Storage Blob Data Contributor
+The Terraform `azurerm` backend uses native Azure Blob Storage lease locks to prevent concurrent executions. During `terraform plan`:
+1. Terraform acquires an exclusive Blob Lease on the remote state blob.
+2. Terraform refreshes state against Azure APIs.
+3. Terraform writes lock metadata and releases the lease upon completion.
+
+Because acquiring a lease is a data-plane write operation, assigning `Storage Blob Data Reader` causes `terraform plan` to fail with authorization errors (`AuthorizationPermissionMismatch`).
+
+**Least-Privilege Enforcement:**  
+Both Plan and Apply identities receive `Storage Blob Data Contributor`, but access is strictly scoped to the **individual state container Resource Manager ID**, never at the subscription or storage account level. Workload-level Azure permissions remain separated (e.g., `Reader` for Plan identities, scoped `Contributor` for Apply identities).
+
+---
+
+## ⚙️ Quickstart Deployment
+
+### 1. Prerequisites
+- **Terraform** `>= 1.9.0`
+- **Azure CLI** `>= 2.60.0`
+- **Permissions:** Subscription `Owner` or `Contributor` + `User Access Administrator`, and Entra ID `Application Administrator`.
+
+### 2. Initial Local Deployment
+```bash
+# Authenticate to Azure
+az login
+az account set --subscription "<YOUR_SUBSCRIPTION_ID>"
+
+# Initialize and validate
+terraform init -backend=false
+terraform fmt -check
+terraform validate
+terraform plan -out=bootstrap.tfplan
+
+# Apply
+terraform apply bootstrap.tfplan
+```
+
+### 3. Migrate Local State to Azure Blob Storage
+1. Retrieve the output storage account name:
+   ```bash
+   terraform output storage_account_name
+   ```
+2. Initialize remote state using the output storage account name:
+   ```bash
+   terraform init -migrate-state \
+     -backend-config="resource_group_name=rg-terraform-bootstrap" \
+     -backend-config="storage_account_name=<OUTPUT_STORAGE_ACCOUNT_NAME>" \
+     -backend-config="container_name=tfstate" \
+     -backend-config="key=bootstrap/terraform.tfstate" \
+     -backend-config="use_oidc=true"
+   ```
+3. Confirm `yes` when prompted. Local state is now securely encrypted and version-controlled in Azure Blob Storage.
+
+---
+
+## 📦 Consuming Remote State in Downstream Landing Zones
+
+Add the backend configuration block to your downstream landing zones (`azure-enterprise-landing-zone-terraform`, `azure-aks-devsecops-pipeline`, etc.):
+
+```terraform
+terraform {
+  required_version = ">= 1.9.0"
+
+  backend "azurerm" {
+    resource_group_name  = "rg-terraform-bootstrap"
+    storage_account_name = "<OUTPUT_STORAGE_ACCOUNT_NAME>"
+    container_name       = "tfstate"
+    key                  = "landing-zone/dev.terraform.tfstate"
+    use_oidc             = true
+  }
+}
+```
+
+---
+
+## 💰 Cost Analysis
+
+| Component | SKU / Tier | Count | Est. Monthly Cost (USD) |
+| :--- | :--- | :---: | :---: |
+| **Storage Account** | Standard LRS (Hot Tier) | 1 | ~$0.50 – $2.00 |
+| **Blob Container** | Private State Blobs (< 50MB) | 1 | < $0.05 |
+| **Microsoft Entra Applications** | Free Tier | 5 | $0.00 |
+| **User-Assigned Managed Identities** | Free Tier | 4 | $0.00 |
+| **Federated Identity Credentials** | Free Tier (GitHub OIDC) | ~14 | $0.00 |
+| **Azure RBAC Role Assignments** | Control Plane | 8 | $0.00 |
+| **Private Endpoint (Optional)** | Azure Private Link | 1 | ~$7.30 / month |
+| **Total Base Monthly Cost** | | | **~$0.50 – $2.00 / month** |
+
+---
+
+## 🔒 Security Verification & Quality Gates
+
+This repository enforces automated DevSecOps validation on every pull request and push to `main`:
+- **`terraform fmt -check -recursive`:** Ensures canonical HCL styling.
+- **`terraform validate`:** Static syntax and provider schema verification.
+- **`tflint --recursive`:** Terraform best practice and naming validation.
+- **`checkov --config-file checkov.yaml`:** Static security analysis (CIS Benchmarks).
+- **`gitleaks detect`:** High-entropy secret and credential scanning.
+
+Detailed verification logs and execution evidence are available in [docs/EVIDENCE.md](docs/EVIDENCE.md).
+
+---
+
+## 👨‍💻 Author & Cloud Architect
+
+**Sanjeev Singh**  
+Senior Azure Cloud Architect & DevSecOps Platform Engineer  
+* 🌐 **Portfolio**: [sanjeevsingh.oneps.in](https://sanjeevsingh.oneps.in)  
+* 💼 **LinkedIn**: [linkedin.com/in/sanjiivsingh](https://linkedin.com/in/sanjiivsingh)  
+* 🐙 **GitHub**: [github.com/sanjiivsingh](https://github.com/sanjiivsingh)
+
+---
+
+## 📄 License
+This project is open-source under the [MIT License](LICENSE).

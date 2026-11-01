@@ -1,10 +1,20 @@
 data "azurerm_client_config" "current" {}
 
-resource "azurerm_resource_group" "bootstrap" {
+# ------------------------------------------------------------------------------
+# 1. Resource Group Module
+# ------------------------------------------------------------------------------
+
+module "resource_group" {
+  source = "./modules/resource-group"
+
   name     = var.resource_group_name
   location = var.location
   tags     = var.tags
 }
+
+# ------------------------------------------------------------------------------
+# 2. Remote State Storage Account Module
+# ------------------------------------------------------------------------------
 
 resource "random_string" "suffix" {
   length  = 6
@@ -12,105 +22,74 @@ resource "random_string" "suffix" {
   upper   = false
 }
 
-resource "azurerm_storage_account" "tfstate" {
-  name                            = "sttfstate${random_string.suffix.result}"
-  resource_group_name             = azurerm_resource_group.bootstrap.name
-  location                        = azurerm_resource_group.bootstrap.location
-  account_tier                    = "Standard"
-  account_replication_type        = "LRS"
-  min_tls_version                 = "TLS1_2"
-  https_traffic_only_enabled      = true
-  allow_nested_items_to_be_public = false
-
-  # Keep these enabled during migration. Disable only after every consumer
-  # uses Entra data-plane auth and private endpoint connectivity is verified.
-  shared_access_key_enabled       = var.shared_access_key_enabled
-  public_network_access_enabled   = var.public_network_access_enabled
-
-  blob_properties {
-    versioning_enabled = true
-    delete_retention_policy {
-      days = 30
-    }
-    container_delete_retention_policy {
-      days = 30
-    }
-  }
-
-  tags = var.tags
-}
-
-resource "azurerm_storage_container" "tfstate" {
-  name                  = "tfstate"
-  storage_account_id    = azurerm_storage_account.tfstate.id
-  container_access_type = "private"
-}
-
 locals {
-  tfstate_container_scope = "${azurerm_storage_account.tfstate.id}/blobServices/default/containers/${azurerm_storage_container.tfstate.name}"
+  storage_account_name    = var.storage_account_name != null ? var.storage_account_name : "sttfstate${random_string.suffix.result}"
+  tfstate_container_scope = "${module.state_storage.id}/blobServices/default/containers/${module.state_container.name}"
   landing_zone_scope_ids = {
-    for environment in var.landing_zone_environments :
-    environment => lookup(
+    for env in var.landing_zone_environments :
+    env => lookup(
       var.landing_zone_scope_ids,
-      environment,
+      env,
       "/subscriptions/${data.azurerm_client_config.current.subscription_id}"
     )
   }
 }
 
-# LEGACY COMPATIBILITY:
-# Keep the existing Entra application/federation while downstream repositories
-# migrate to per-environment user-assigned managed identities.
-resource "azuread_application" "github_actions" {
-  display_name = "app-github-actions-${var.github_organization}"
+module "state_storage" {
+  source = "./modules/state-storage"
+
+  storage_account_name          = local.storage_account_name
+  resource_group_name           = module.resource_group.name
+  location                      = module.resource_group.location
+  account_replication_type      = var.account_replication_type
+  shared_access_key_enabled     = var.shared_access_key_enabled
+  public_network_access_enabled = var.public_network_access_enabled
+  tags                          = var.tags
 }
 
-resource "azuread_service_principal" "github_actions" {
-  client_id = azuread_application.github_actions.client_id
+# ------------------------------------------------------------------------------
+# 3. State Container Module
+# ------------------------------------------------------------------------------
+
+module "state_container" {
+  source = "./modules/state-container"
+
+  container_name     = "tfstate"
+  storage_account_id = module.state_storage.id
 }
 
-resource "azuread_application_federated_identity_credential" "main_branch" {
-  for_each = toset(var.github_repositories)
+# ------------------------------------------------------------------------------
+# 4. Microsoft Entra OIDC Workload Identities Module
+# ------------------------------------------------------------------------------
 
-  application_id = azuread_application.github_actions.id
-  display_name   = "${each.key}-main"
-  description    = "Legacy OIDC federation for ${each.key} main branch deployments"
-  audiences      = ["api://AzureADTokenExchange"]
-  issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:${var.github_organization}/${each.key}:ref:refs/heads/main"
+module "github_oidc" {
+  source = "./modules/github-oidc"
+
+  github_organization              = var.github_organization
+  github_repositories              = var.github_repositories
+  bootstrap_repository_name        = var.github_repository_bootstrap
+  bootstrap_admin_environment      = var.bootstrap_admin_environment
+  create_environment_identities    = var.create_environment_identities
+  enable_legacy_branch_credentials = var.enable_legacy_branch_credentials
 }
 
-resource "azuread_application_federated_identity_credential" "pr_branches" {
-  for_each = toset(var.github_repositories)
+# ------------------------------------------------------------------------------
+# 5. User-Assigned Managed Identities for Landing Zone Environments (UAMI)
+# ------------------------------------------------------------------------------
 
-  application_id = azuread_application.github_actions.id
-  display_name   = "${each.key}-pr"
-  description    = "Legacy OIDC federation for ${each.key} pull requests"
-  audiences      = ["api://AzureADTokenExchange"]
-  issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:${var.github_organization}/${each.key}:pull_request"
-}
-
-resource "azurerm_role_assignment" "tfstate_blob_contributor" {
-  scope                = local.tfstate_container_scope
-  role_definition_name = "Storage Blob Data Contributor"
-  principal_id         = azuread_service_principal.github_actions.object_id
-}
-
-# Separate identities for each ALZ environment and operation.
 resource "azurerm_user_assigned_identity" "alz_plan" {
   for_each            = toset(var.landing_zone_environments)
   name                = "id-alz-${each.key}-plan"
-  resource_group_name = azurerm_resource_group.bootstrap.name
-  location            = azurerm_resource_group.bootstrap.location
+  resource_group_name = module.resource_group.name
+  location            = module.resource_group.location
   tags                = var.tags
 }
 
 resource "azurerm_user_assigned_identity" "alz_apply" {
   for_each            = toset(var.landing_zone_environments)
   name                = "id-alz-${each.key}-apply"
-  resource_group_name = azurerm_resource_group.bootstrap.name
-  location            = azurerm_resource_group.bootstrap.location
+  resource_group_name = module.resource_group.name
+  location            = module.resource_group.location
   tags                = var.tags
 }
 
@@ -118,8 +97,7 @@ resource "azurerm_federated_identity_credential" "alz_plan" {
   for_each = toset(var.landing_zone_environments)
 
   name                      = "github-alz-${each.key}-plan"
-  resource_group_name         = azurerm_resource_group.bootstrap.name
-  parent_id                   = azurerm_user_assigned_identity.alz_plan[each.key].id
+  user_assigned_identity_id = azurerm_user_assigned_identity.alz_plan[each.key].id
   audience                  = ["api://AzureADTokenExchange"]
   issuer                    = "https://token.actions.githubusercontent.com"
   subject                   = "repo:${var.github_organization}/${var.landing_zone_repository}:environment:${each.key}-plan"
@@ -129,93 +107,80 @@ resource "azurerm_federated_identity_credential" "alz_apply" {
   for_each = toset(var.landing_zone_environments)
 
   name                      = "github-alz-${each.key}-apply"
-  resource_group_name         = azurerm_resource_group.bootstrap.name
-  parent_id                   = azurerm_user_assigned_identity.alz_apply[each.key].id
+  user_assigned_identity_id = azurerm_user_assigned_identity.alz_apply[each.key].id
   audience                  = ["api://AzureADTokenExchange"]
   issuer                    = "https://token.actions.githubusercontent.com"
   subject                   = "repo:${var.github_organization}/${var.landing_zone_repository}:environment:${each.key}-apply"
 }
 
-# Terraform azurerm backend uses blob leases; both plan and apply identities
-# therefore need Blob Data Contributor on the state container.
-resource "azurerm_role_assignment" "alz_plan_state" {
-  for_each             = toset(var.landing_zone_environments)
-  scope                = local.tfstate_container_scope
-  role_definition_name = "Storage Blob Data Contributor"
-  principal_id         = azurerm_user_assigned_identity.alz_plan[each.key].principal_id
+# ------------------------------------------------------------------------------
+# 6. Least-Privilege RBAC
+# ------------------------------------------------------------------------------
+
+locals {
+  alz_plan_principals  = [for id in azurerm_user_assigned_identity.alz_plan : id.principal_id]
+  alz_apply_principals = [for id in azurerm_user_assigned_identity.alz_apply : id.principal_id]
+
+  all_state_principals = concat(
+    [module.github_oidc.bootstrap_admin_principal_id],
+    values(module.github_oidc.environment_principal_ids),
+    local.alz_plan_principals,
+    local.alz_apply_principals
+  )
+
+  alz_workload_roles = merge(
+    {
+      for env in var.landing_zone_environments :
+      "alz-plan-reader-${env}" => {
+        principal_id         = azurerm_user_assigned_identity.alz_plan[env].principal_id
+        role_definition_name = "Reader"
+        scope                = local.landing_zone_scope_ids[env]
+      }
+    },
+    {
+      for env in var.landing_zone_environments :
+      "alz-apply-contributor-${env}" => {
+        principal_id         = azurerm_user_assigned_identity.alz_apply[env].principal_id
+        role_definition_name = "Contributor"
+        scope                = local.landing_zone_scope_ids[env]
+      }
+    }
+  )
 }
 
-resource "azurerm_role_assignment" "alz_apply_state" {
-  for_each             = toset(var.landing_zone_environments)
-  scope                = local.tfstate_container_scope
-  role_definition_name = "Storage Blob Data Contributor"
-  principal_id         = azurerm_user_assigned_identity.alz_apply[each.key].principal_id
+module "rbac" {
+  source = "./modules/rbac"
+
+  state_container_scope        = module.state_container.id
+  state_blob_data_contributors = local.all_state_principals
+  workload_role_assignments    = local.alz_workload_roles
 }
 
-# The current ALZ root creates resource groups at subscription scope.
-# Plan gets Reader; apply gets Contributor. Supply a different scope ID per
-# environment in landing_zone_scope_ids when dev/prod use different subscriptions.
-resource "azurerm_role_assignment" "alz_plan_reader" {
-  for_each             = toset(var.landing_zone_environments)
-  scope                = local.landing_zone_scope_ids[each.key]
-  role_definition_name = "Reader"
-  principal_id         = azurerm_user_assigned_identity.alz_plan[each.key].principal_id
-}
+# ------------------------------------------------------------------------------
+# 7. Optional Private DNS and Private Endpoint (Staged Network Hardening)
+# ------------------------------------------------------------------------------
 
-resource "azurerm_role_assignment" "alz_apply_contributor" {
-  for_each             = toset(var.landing_zone_environments)
-  scope                = local.landing_zone_scope_ids[each.key]
-  role_definition_name = "Contributor"
-  principal_id         = azurerm_user_assigned_identity.alz_apply[each.key].principal_id
-}
+module "private_dns" {
+  count  = var.enable_private_endpoint && var.management_vnet_id != null ? 1 : 0
+  source = "./modules/private-dns"
 
-# Optional Blob Private Endpoint. Keep disabled until a management VNet,
-# dedicated PE subnet, and private DNS ownership are confirmed.
-resource "azurerm_private_dns_zone" "blob" {
-  count               = var.enable_private_endpoint ? 1 : 0
-  name                = "privatelink.blob.core.windows.net"
-  resource_group_name = coalesce(var.private_dns_resource_group_name, azurerm_resource_group.bootstrap.name)
+  zone_name           = "privatelink.blob.core.windows.net"
+  resource_group_name = coalesce(var.private_dns_resource_group_name, module.resource_group.name)
+  virtual_network_ids = [var.management_vnet_id]
+  vnet_link_name      = "link-${var.management_vnet_name}-blob"
   tags                = var.tags
 }
 
-resource "azurerm_private_dns_zone_virtual_network_link" "blob" {
-  count                 = var.enable_private_endpoint ? 1 : 0
-  name                  = "link-${var.management_vnet_name}-blob"
-  resource_group_name   = coalesce(var.private_dns_resource_group_name, azurerm_resource_group.bootstrap.name)
-  private_dns_zone_name = azurerm_private_dns_zone.blob[0].name
-  virtual_network_id    = var.management_vnet_id
-  registration_enabled  = false
-  tags                  = var.tags
-}
+module "private_endpoint" {
+  count  = var.enable_private_endpoint && var.private_endpoint_subnet_id != null ? 1 : 0
+  source = "./modules/private-endpoint"
 
-resource "azurerm_private_endpoint" "tfstate_blob" {
-  count               = var.enable_private_endpoint ? 1 : 0
-  name                = "pe-${azurerm_storage_account.tfstate.name}-blob"
-  location            = azurerm_resource_group.bootstrap.location
-  resource_group_name = azurerm_resource_group.bootstrap.name
-  subnet_id           = var.private_endpoint_subnet_id
-  tags                = var.tags
-
-  private_service_connection {
-    name                           = "psc-${azurerm_storage_account.tfstate.name}-blob"
-    private_connection_resource_id = azurerm_storage_account.tfstate.id
-    subresource_names              = ["blob"]
-    is_manual_connection           = false
-  }
-
-  private_dns_zone_group {
-    name                 = "blob-zone-group"
-    private_dns_zone_ids = [azurerm_private_dns_zone.blob[0].id]
-  }
-
-  depends_on = [azurerm_private_dns_zone_virtual_network_link.blob]
-}
-
-resource "azuread_application_federated_identity_credential" "bootstrap_admin" {
-  application_id = azuread_application.github_actions.id
-  display_name   = "bootstrap-admin-environment"
-  description    = "Privileged bootstrap workflow; protect the GitHub environment with required reviewers."
-  audiences      = ["api://AzureADTokenExchange"]
-  issuer         = "https://token.actions.githubusercontent.com"
-  subject        = "repo:${var.github_organization}/${var.github_repository_bootstrap}:environment:${var.bootstrap_admin_environment}"
+  name                 = "pe-${module.state_storage.name}-blob"
+  resource_group_name  = module.resource_group.name
+  location             = module.resource_group.location
+  subnet_id            = var.private_endpoint_subnet_id
+  storage_account_id   = module.state_storage.id
+  subresource_names    = ["blob"]
+  private_dns_zone_ids = var.enable_private_endpoint && var.management_vnet_id != null ? [module.private_dns[0].id] : []
+  tags                 = var.tags
 }
